@@ -12,158 +12,113 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// Direct function to find the save button URL
-function findSaveButtonUrl(html) {
-  console.log('Looking for save button URL...');
-  
-  // EXACT pattern you provided
-  const patterns = [
-    // Pattern 1: Exact save button with id
-    /<a[^>]*id="save-image-btn"[^>]*href="([^"]+)"[^>]*>/i,
-    
-    // Pattern 2: Save button with class
-    /<a[^>]*class="[^"]*btn-primary[^"]*"[^>]*href="([^"]+)"[^>]*>/i,
-    
-    // Pattern 3: Any save button pattern
-    /<a[^>]*href="(https:\/\/e[0-9]\.yotools\.net\/save-image\/[^"]+)"[^>]*>/i,
-    
-    // Pattern 4: Simple href with save-image
-    /href="(https:\/\/e[0-9]\.yotools\.net\/save-image\/[^"]+)"/i,
-    
-    // Pattern 5: Just look for save-image URL anywhere
-    /(https:\/\/e[0-9]\.yotools\.net\/save-image\/[a-zA-Z0-9]+\.jpg\/[0-9]+)/,
-    
-    // Pattern 6: Look for any e1.yotools.net image URL
-    /(https:\/\/e1\.yotools\.net\/[a-zA-Z0-9_\/\-\.]+\.jpg)/,
-    
-    // Pattern 7: Most generic - any image on yotools
-    /(https:\/\/e[0-9]\.yotools\.net\/[a-zA-Z0-9_\/\-\.]+\.(jpg|png|jpeg))/,
-  ];
-  
-  for (let i = 0; i < patterns.length; i++) {
-    const match = html.match(patterns[i]);
-    if (match && match[1]) {
-      console.log(`Found with pattern ${i + 1}: ${match[1]}`);
-      return match[1];
-    } else if (match && match[0]) {
-      console.log(`Found with pattern ${i + 1} (group 0): ${match[0]}`);
-      // Extract URL from the match
-      const urlMatch = match[0].match(/https:\/\/[^"'\s]+/);
-      if (urlMatch) return urlMatch[0];
-    }
-  }
-  
-  // If still not found, search for "save-image" text
-  const saveIndex = html.indexOf('save-image');
-  if (saveIndex !== -1) {
-    // Extract 100 characters around "save-image"
-    const snippet = html.substring(Math.max(0, saveIndex - 50), Math.min(html.length, saveIndex + 150));
-    console.log('Found "save-image" text in snippet:', snippet);
-    
-    // Try to extract URL from snippet
-    const urlMatch = snippet.match(/https:\/\/[^"'\s]+/);
-    if (urlMatch) {
-      console.log('Extracted from snippet:', urlMatch[0]);
-      return urlMatch[0];
-    }
-  }
-  
-  return null;
-}
+// Wait function
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Main function
 async function generateLogo(effectUrl, text) {
   try {
-    console.log(`\n=== Generating: ${effectUrl} ===`);
-    console.log(`Text: ${text}`);
+    console.log(`Generating logo: ${text}`);
     
-    // Step 1: Get page
+    // Step 1: Get the page to extract form data
     const pageRes = await axios.get(effectUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       },
       timeout: 10000
     });
     
-    // Extract token
-    const tokenMatch = pageRes.data.match(/name="token" value="([^"]+)"/);
-    const serverMatch = pageRes.data.match(/name="build_server" value="([^"]+)"/);
-    const serverIdMatch = pageRes.data.match(/name="build_server_id" value="([^"]+)"/);
+    const html = pageRes.data;
+    
+    // Extract form data using regex
+    const tokenMatch = html.match(/name="token" value="([^"]+)"/);
+    const serverMatch = html.match(/name="build_server" value="([^"]+)"/);
+    const serverIdMatch = html.match(/name="build_server_id" value="([^"]+)"/);
     
     if (!tokenMatch || !serverMatch) {
-      throw new Error('Form data not found');
+      throw new Error('Could not extract form data');
     }
     
     const token = tokenMatch[1];
     const buildServer = serverMatch[1];
     const buildServerId = serverIdMatch ? serverIdMatch[1] : '2';
     
-    // Step 2: Submit form
-    const formData = new URLSearchParams();
-    formData.append('text[]', text);
-    formData.append('token', token);
-    formData.append('build_server', buildServer);
-    formData.append('build_server_id', buildServerId);
-    formData.append('submit', 'GO');
+    console.log('Form data extracted');
     
+    // Step 2: Prepare form data as multipart/form-data
+    // ephoto360 expects multipart form data, not urlencoded
+    const boundary = '----WebKitFormBoundary' + Math.random().toString(36);
+    const formData = `--${boundary}\r
+Content-Disposition: form-data; name="text[]"\r
+\r
+${text}\r
+--${boundary}\r
+Content-Disposition: form-data; name="token"\r
+\r
+${token}\r
+--${boundary}\r
+Content-Disposition: form-data; name="build_server"\r
+\r
+${buildServer}\r
+--${boundary}\r
+Content-Disposition: form-data; name="build_server_id"\r
+\r
+${buildServerId}\r
+--${boundary}\r
+Content-Disposition: form-data; name="submit"\r
+\r
+GO\r
+--${boundary}--\r
+`;
+    
+    // Step 3: Submit the form
     console.log('Submitting form...');
-    const postRes = await axios.post(effectUrl, formData.toString(), {
+    const submitRes = await axios.post(effectUrl, formData, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
         'Referer': effectUrl,
         'Origin': 'https://en.ephoto360.com',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
       },
-      timeout: 20000
+      maxRedirects: 0, // Don't follow redirects
+      validateStatus: null, // Accept all status codes
+      timeout: 30000
     });
     
-    // Step 3: Find the URL
-    const html = postRes.data;
-    const downloadUrl = findSaveButtonUrl(html);
+    console.log('Form submitted. Status:', submitRes.status);
     
-    if (!downloadUrl) {
-      // Show what we actually got
-      console.log('HTML length:', html.length);
-      console.log('First 2000 chars:', html.substring(0, 2000));
+    // Check if we got a redirect
+    if (submitRes.status === 302 || submitRes.status === 301) {
+      const redirectUrl = submitRes.headers.location;
+      console.log('Got redirect to:', redirectUrl);
       
-      // Try one more method: search for any image URL
-      const anyImageMatch = html.match(/(https:\/\/e[0-9]\.yotools\.net\/[a-zA-Z0-9_\/\-\.]+\.jpg)/);
-      if (anyImageMatch) {
-        return {
-          success: true,
-          image_url: anyImageMatch[1],
-          download_url: anyImageMatch[1]
-        };
-      }
+      // Wait for image generation (10-15 seconds as you mentioned)
+      console.log('Waiting 15 seconds for image generation...');
+      await sleep(15000);
       
-      throw new Error('Could not find image URL in response');
+      // Follow the redirect
+      console.log('Following redirect...');
+      const resultRes = await axios.get(redirectUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Referer': effectUrl,
+        },
+        timeout: 30000
+      });
+      
+      return extractUrls(resultRes.data);
+    } else {
+      // If no redirect, maybe we got the result directly
+      console.log('No redirect, checking response...');
+      
+      // Wait a bit anyway
+      await sleep(10000);
+      
+      // Try to extract from current response
+      return extractUrls(submitRes.data);
     }
-    
-    // Construct image URL from download URL
-    let imageUrl = downloadUrl;
-    
-    // If it's a save-image URL, convert to image URL
-    if (downloadUrl.includes('/save-image/')) {
-      const filenameMatch = downloadUrl.match(/save-image\/([a-zA-Z0-9]+)\.jpg/);
-      if (filenameMatch) {
-        const filename = filenameMatch[1];
-        const date = new Date();
-        const year = date.getFullYear();
-        const month = (date.getMonth() + 1).toString().padStart(2, '0');
-        imageUrl = `https://e1.yotools.net/images/user_image/${year}/${month}/${filename}.jpg`;
-      }
-    }
-    
-    console.log('Success!');
-    console.log('Download URL:', downloadUrl);
-    console.log('Image URL:', imageUrl);
-    
-    return {
-      success: true,
-      image_url: imageUrl,
-      download_url: downloadUrl
-    };
     
   } catch (error) {
     console.error('Error:', error.message);
@@ -174,12 +129,98 @@ async function generateLogo(effectUrl, text) {
   }
 }
 
+// Function to extract URLs from HTML
+function extractUrls(html) {
+  console.log('Extracting URLs from HTML...');
+  
+  // Pattern 1: Look for save button URL (your exact pattern)
+  const saveButtonPattern = /<a[^>]*id="save-image-btn"[^>]*href="(https:\/\/e1\.yotools\.net\/save-image\/[^"]+\.jpg\/[^"]+)"/;
+  const saveMatch = html.match(saveButtonPattern);
+  
+  if (saveMatch && saveMatch[1]) {
+    const downloadUrl = saveMatch[1];
+    console.log('Found save button URL:', downloadUrl);
+    
+    // Extract image URL from save URL
+    const filenameMatch = downloadUrl.match(/save-image\/([a-f0-9]+)\.jpg/);
+    if (filenameMatch) {
+      const filename = filenameMatch[1];
+      const date = new Date();
+      const year = date.getFullYear();
+      const month = (date.getMonth() + 1).toString().padStart(2, '0');
+      const imageUrl = `https://e1.yotools.net/images/user_image/${year}/${month}/${filename}.jpg`;
+      
+      return {
+        success: true,
+        image_url: imageUrl,
+        download_url: downloadUrl
+      };
+    }
+  }
+  
+  // Pattern 2: Look for image src directly
+  const imagePattern = /<img[^>]*class="bg-image"[^>]*src="(https:\/\/e1\.yotools\.net\/images\/user_image\/[^"]+\.jpg)"/;
+  const imageMatch = html.match(imagePattern);
+  
+  if (imageMatch && imageMatch[1]) {
+    const imageUrl = imageMatch[1];
+    console.log('Found image URL:', imageUrl);
+    
+    return {
+      success: true,
+      image_url: imageUrl,
+      download_url: imageUrl
+    };
+  }
+  
+  // Pattern 3: Look for any image URL
+  const anyImagePattern = /(https:\/\/e1\.yotools\.net\/[a-zA-Z0-9_\/\-\.]+\.jpg)/g;
+  const matches = html.match(anyImagePattern);
+  
+  if (matches && matches.length > 0) {
+    // Filter to find the generated image (not icons/logos)
+    for (const url of matches) {
+      if (url.includes('/user_image/') || url.includes('/save-image/')) {
+        console.log('Found generated image URL:', url);
+        return {
+          success: true,
+          image_url: url,
+          download_url: url
+        };
+      }
+    }
+  }
+  
+  // Pattern 4: Look for share link
+  const sharePattern = /Link Image (https:\/\/[^\s<]+)/;
+  const shareMatch = html.match(sharePattern);
+  
+  if (shareMatch && shareMatch[1]) {
+    console.log('Found share link:', shareMatch[1]);
+    return {
+      success: true,
+      image_url: shareMatch[1],
+      download_url: shareMatch[1]
+    };
+  }
+  
+  console.log('Could not find URLs in HTML');
+  console.log('HTML sample:', html.substring(0, 1000));
+  
+  return {
+    success: false,
+    error: 'Could not extract image URLs',
+    html_sample: html.substring(0, 1000)
+  };
+}
+
 // API Routes
 app.get('/', (req, res) => {
   res.json({
-    message: 'ephoto360 API - Direct Pattern Matching',
+    message: 'ephoto360 API - With Wait Time',
     endpoints: ['/api/logo'],
-    example: '/api/logo?url=EPHOTO_URL&name=TEXT'
+    usage: '/api/logo?url=EPHOTO_URL&name=TEXT',
+    note: 'This API waits 15 seconds for image generation'
   });
 });
 
@@ -190,23 +231,15 @@ app.get('/api/logo', async (req, res) => {
     if (!url || !name) {
       return res.status(400).json({
         success: false,
-        error: 'Need url and name parameters'
+        error: 'URL and name parameters are required'
       });
     }
+    
+    console.log(`API Request: ${url} - "${name}"`);
     
     const result = await generateLogo(url, name);
     
-    if (result.success) {
-      res.json({
-        success: true,
-        result: {
-          image_url: result.image_url,
-          download_url: result.download_url
-        }
-      });
-    } else {
-      res.status(500).json(result);
-    }
+    res.json(result);
     
   } catch (error) {
     res.status(500).json({
@@ -216,63 +249,19 @@ app.get('/api/logo', async (req, res) => {
   }
 });
 
-// Test endpoint that shows raw HTML
-app.get('/api/raw', async (req, res) => {
+// Simple test endpoint
+app.get('/api/test', async (req, res) => {
   try {
-    const { url, name } = req.query;
-    
-    if (!url || !name) {
-      return res.json({ error: 'Need url and name' });
-    }
-    
-    // Get page
-    const pageRes = await axios.get(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      timeout: 10000
-    });
-    
-    // Extract token
-    const tokenMatch = pageRes.data.match(/name="token" value="([^"]+)"/);
-    const serverMatch = pageRes.data.match(/name="build_server" value="([^"]+)"/);
-    
-    if (!tokenMatch || !serverMatch) {
-      return res.json({ error: 'No form data found' });
-    }
-    
-    // Submit form
-    const formData = new URLSearchParams();
-    formData.append('text[]', name);
-    formData.append('token', tokenMatch[1]);
-    formData.append('build_server', serverMatch[1]);
-    formData.append('build_server_id', '2');
-    formData.append('submit', 'GO');
-    
-    const postRes = await axios.post(url, formData.toString(), {
-      headers: {
-        'User-Agent': 'Mozilla/5.0',
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Referer': url
-      },
-      timeout: 15000
-    });
-    
-    // Return first 5000 chars of HTML
-    const html = postRes.data;
-    const hasSaveImage = html.includes('save-image');
-    const saveImageIndex = html.indexOf('save-image');
-    const snippet = saveImageIndex !== -1 
-      ? html.substring(Math.max(0, saveImageIndex - 200), Math.min(html.length, saveImageIndex + 300))
-      : 'No save-image found';
-    
-    res.json({
-      html_length: html.length,
-      has_save_image: hasSaveImage,
-      save_image_snippet: snippet,
-      first_1000_chars: html.substring(0, 1000)
-    });
-    
+    const result = await generateLogo(
+      'https://en.ephoto360.com/naruto-shippuden-logo-style-text-effect-online-808.html',
+      'NARUTO'
+    );
+    res.json(result);
   } catch (error) {
-    res.json({ error: error.message });
+    res.json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
