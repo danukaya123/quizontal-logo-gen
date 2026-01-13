@@ -1,13 +1,15 @@
 {
   "name": "quizontal-logo-gen",
   "version": "1.0.0",
-  "main": "index.js",
+  "type": "module",
   "scripts": {
-    "start": "vercel dev"
+    "dev": "vercel dev",
+    "start": "node api/logo.js",
+    "postinstall": "node ./node_modules/chrome-aws-lambda/scripts/download.js"
   },
-"dependencies": {
-  "chrome-aws-lambda": "10.1.0",
-  "puppeteer-core": "10.1.0",
-  "express": "^5.2.1"
-}
+  "dependencies": {
+    "chrome-aws-lambda": "10.1.0",
+    "puppeteer-core": "10.1.0",
+    "express": "^5.2.1"
+  }
 }
