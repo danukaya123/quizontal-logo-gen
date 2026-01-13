@@ -1,5 +1,5 @@
 const puppeteer = require('puppeteer-core');
-const chromium = require('@sparticuz/chromium-min');
+const chromium = require('chrome-aws-lambda');
 
 module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -11,10 +11,10 @@ module.exports = async (req, res) => {
 
   try {
     const browser = await puppeteer.launch({
-      executablePath: await chromium.executablePath(),
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      headless: true
+      executablePath: await chromium.executablePath,
+      headless: chromium.headless,
     });
 
     const page = await browser.newPage();
@@ -30,6 +30,7 @@ module.exports = async (req, res) => {
     res.json({ status: true, result: { download_url: imgUrl } });
 
   } catch (error) {
+    console.error(error);
     res.json({ status: false, message: "Failed to generate", error: error.message });
   }
 };
