@@ -1,12 +1,13 @@
 {
-  "name": "ephoto360-api",
+  "name": "quizontal-logo-gen",
   "version": "1.0.0",
-  "description": "Ephoto360 Logo Generator API for WhatsApp bots",
-  "main": "api/logo.js",
-  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "vercel dev"
+  },
   "dependencies": {
-    "axios": "^1.13.2",
-    "cheerio": "^1.1.2",
-    "qs": "^6.14.1"
+    "chrome-aws-lambda": "^10.1.0",
+    "puppeteer-core": "^24.35.0",
+    "express": "^5.2.1"
   }
 }
