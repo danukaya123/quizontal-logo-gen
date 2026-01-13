@@ -13,10 +13,154 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
+// Debug function to save HTML for analysis
+function debugHtml(html, filename) {
+  // Uncomment for debugging
+  // const fs = require('fs');
+  // fs.writeFileSync(`debug_${filename}.html`, html);
+  console.log(`Debug: HTML length = ${html.length}`);
+}
+
+// Extract URLs from HTML with multiple methods
+function extractImageUrls(html) {
+  const urls = {
+    image_url: null,
+    download_url: null
+  };
+  
+  console.log('Extracting URLs from HTML...');
+  
+  // Method 1: Look for save-image button (EXACT pattern you provided)
+  const saveButtonRegex = /href=["'](https:\/\/e[0-9]\.yotools\.net\/save-image\/[a-zA-Z0-9]+\.jpg\/[0-9]+)["']/;
+  const saveMatch = html.match(saveButtonRegex);
+  
+  if (saveMatch && saveMatch[1]) {
+    urls.download_url = saveMatch[1];
+    console.log('Found download URL (save button):', urls.download_url);
+    
+    // Extract filename from download URL
+    const filenameMatch = urls.download_url.match(/save-image\/([a-zA-Z0-9]+)\.jpg/);
+    if (filenameMatch) {
+      const filename = filenameMatch[1];
+      const date = new Date();
+      const year = date.getFullYear();
+      const month = (date.getMonth() + 1).toString().padStart(2, '0');
+      urls.image_url = `https://e1.yotools.net/images/user_image/${year}/${month}/${filename}.jpg`;
+      console.log('Constructed image URL:', urls.image_url);
+    }
+  }
+  
+  // Method 2: Look for direct image URL pattern
+  if (!urls.image_url) {
+    const imageRegex = /(https:\/\/e[0-9]\.yotools\.net\/images\/user_image\/\d{4}\/\d{2}\/[a-zA-Z0-9]+\.(jpg|png|jpeg))/;
+    const imageMatch = html.match(imageRegex);
+    
+    if (imageMatch) {
+      urls.image_url = imageMatch[1];
+      console.log('Found direct image URL:', urls.image_url);
+      
+      if (!urls.download_url) {
+        urls.download_url = urls.image_url;
+      }
+    }
+  }
+  
+  // Method 3: Look for bg-image src
+  if (!urls.image_url) {
+    const bgImageRegex = /src=["'](https:\/\/e[0-9]\.yotools\.net\/[^"']+\.(jpg|png|jpeg))["'][^>]*class=["'][^"']*bg-image["']/;
+    const bgMatch = html.match(bgImageRegex);
+    
+    if (bgMatch) {
+      urls.image_url = bgMatch[1];
+      console.log('Found bg-image URL:', urls.image_url);
+      
+      if (!urls.download_url) {
+        urls.download_url = urls.image_url;
+      }
+    }
+  }
+  
+  // Method 4: Generic search for any yotools image
+  if (!urls.image_url) {
+    const genericImageRegex = /(https:\/\/e[0-9]\.yotools\.net\/[a-zA-Z0-9_\/\-\.]+\.(jpg|png|jpeg))/g;
+    const matches = html.match(genericImageRegex);
+    
+    if (matches && matches.length > 0) {
+      // Filter out common non-image URLs
+      const filtered = matches.filter(url => 
+        !url.includes('logo') && 
+        !url.includes('icon') &&
+        (url.includes('/user_image/') || url.includes('/save-image/'))
+      );
+      
+      if (filtered.length > 0) {
+        urls.image_url = filtered[0];
+        console.log('Found generic image URL:', urls.image_url);
+        
+        if (!urls.download_url) {
+          urls.download_url = urls.image_url;
+        }
+      }
+    }
+  }
+  
+  // Method 5: Use cheerio to parse HTML
+  if (!urls.image_url) {
+    try {
+      const $ = cheerio.load(html);
+      
+      // Look for save button
+      const saveBtn = $('#save-image-btn').attr('href');
+      if (saveBtn && saveBtn.includes('yotools.net')) {
+        urls.download_url = saveBtn.startsWith('http') ? saveBtn : 'https:' + saveBtn;
+        console.log('Found with cheerio (save button):', urls.download_url);
+      }
+      
+      // Look for images
+      $('img').each((i, elem) => {
+        const src = $(elem).attr('src');
+        if (src && src.includes('yotools.net') && src.match(/\.(jpg|png|jpeg)$/)) {
+          urls.image_url = src.startsWith('http') ? src : 'https:' + src;
+          console.log('Found with cheerio (img tag):', urls.image_url);
+          return false; // Break loop
+        }
+      });
+      
+      // If we have download URL but no image URL, construct it
+      if (urls.download_url && !urls.image_url && urls.download_url.includes('/save-image/')) {
+        const filenameMatch = urls.download_url.match(/save-image\/([a-zA-Z0-9]+)\.jpg/);
+        if (filenameMatch) {
+          const filename = filenameMatch[1];
+          const date = new Date();
+          const year = date.getFullYear();
+          const month = (date.getMonth() + 1).toString().padStart(2, '0');
+          urls.image_url = `https://e1.yotools.net/images/user_image/${year}/${month}/${filename}.jpg`;
+        }
+      }
+      
+    } catch (e) {
+      console.log('Cheerio parsing failed:', e.message);
+    }
+  }
+  
+  // Final fallback: If we have partial URL, complete it
+  if (urls.image_url && urls.image_url === 'https://e1.yotools.net') {
+    // Look for any path after yotools.net
+    const pathMatch = html.match(/e1\.yotools\.net(\/[a-zA-Z0-9_\/\-\.]+\.(jpg|png|jpeg))/);
+    if (pathMatch) {
+      urls.image_url = 'https://e1.yotools.net' + pathMatch[1];
+      console.log('Fixed partial URL:', urls.image_url);
+    }
+  }
+  
+  return urls;
+}
+
 // Main function to generate logo
 async function generateEphotoLogo(effectUrl, text) {
   try {
-    console.log(`Generating logo: ${effectUrl} - "${text}"`);
+    console.log(`\n=== Generating logo: ${effectUrl} ===`);
+    console.log(`Text: "${text}"`);
     
     // Step 1: Get the effect page
     const pageResponse = await axios.get(effectUrl, {
@@ -25,9 +169,8 @@ async function generateEphotoLogo(effectUrl, text) {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
         'Referer': 'https://en.ephoto360.com/',
-        'Upgrade-Insecure-Requests': '1'
       },
-      timeout: 10000
+      timeout: 15000
     });
     
     const $ = cheerio.load(pageResponse.data);
@@ -37,13 +180,14 @@ async function generateEphotoLogo(effectUrl, text) {
     const buildServer = $('input[name="build_server"]').val();
     const buildServerId = $('input[name="build_server_id"]').val();
     
+    console.log('Extracted token:', token ? 'Yes' : 'No');
+    console.log('Build server:', buildServer);
+    
     if (!token || !buildServer) {
-      throw new Error('Could not extract required form data');
+      throw new Error('Could not extract form data. Token or build server missing.');
     }
     
-    console.log('Form data extracted:', { token: token.substring(0, 10) + '...', buildServer, buildServerId });
-    
-    // Step 2: Prepare form data (use URLSearchParams instead of FormData)
+    // Step 2: Prepare form data
     const formData = new URLSearchParams();
     formData.append('text[]', text);
     formData.append('token', token);
@@ -52,114 +196,86 @@ async function generateEphotoLogo(effectUrl, text) {
     formData.append('submit', 'GO');
     
     // Step 3: Submit the form
+    console.log('Submitting form...');
     const postResponse = await axios.post(effectUrl, formData.toString(), {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
         'Referer': effectUrl,
         'Origin': 'https://en.ephoto360.com',
-        'Upgrade-Insecure-Requests': '1',
         'Cookie': pageResponse.headers['set-cookie'] ? pageResponse.headers['set-cookie'].join('; ') : ''
       },
       maxRedirects: 5,
-      timeout: 20000
+      timeout: 25000
     });
     
-    const resultHtml = postResponse.data;
+    console.log('Form submitted. Response length:', postResponse.data.length);
     
-    // Step 4: Extract image URLs using the exact patterns you found
-    let imageUrl = null;
-    let downloadUrl = null;
+    // Save HTML for debugging if needed
+    debugHtml(postResponse.data, 'response');
     
-    // Pattern 1: Look for the save button with exact href pattern
-    const saveButtonMatch = resultHtml.match(/href="(https:\/\/e[0-9]\.yotools\.net\/save-image\/[^"]+\.jpg\/[0-9]+)"/);
-    if (saveButtonMatch) {
-      downloadUrl = saveButtonMatch[1];
-      console.log('Found download URL from save button:', downloadUrl);
+    // Step 4: Extract URLs
+    const urls = extractImageUrls(postResponse.data);
+    
+    if (!urls.image_url || !urls.download_url) {
+      // Try one more time with different regex
+      console.log('Primary extraction failed, trying alternative methods...');
       
-      // Extract filename from download URL to construct image URL
-      const filenameMatch = downloadUrl.match(/save-image\/([^\/]+)\.jpg/);
-      if (filenameMatch) {
-        const filename = filenameMatch[1];
-        // Construct image URL pattern: https://e1.yotools.net/images/user_image/YYYY/MM/filename.jpg
-        const date = new Date();
-        const year = date.getFullYear();
-        const month = (date.getMonth() + 1).toString().padStart(2, '0');
-        imageUrl = `https://e1.yotools.net/images/user_image/${year}/${month}/${filename}.jpg`;
-        console.log('Constructed image URL:', imageUrl);
+      // Look for any URL with timestamp pattern
+      const timestampPattern = /(https:\/\/e[0-9]\.yotools\.net\/[a-zA-Z0-9_\/\-]+\.jpg\/[0-9]+)/;
+      const timestampMatch = postResponse.data.match(timestampPattern);
+      
+      if (timestampMatch) {
+        urls.download_url = timestampMatch[1];
+        console.log('Found with timestamp pattern:', urls.download_url);
+      }
+      
+      // Look for image in JavaScript
+      const jsPattern = /["'](https:\/\/e[0-9]\.yotools\.net\/[^"']+\.jpg)["']/g;
+      const jsMatches = postResponse.data.match(jsPattern);
+      
+      if (jsMatches && jsMatches.length > 0) {
+        // Get the longest match (likely the actual image)
+        const longestMatch = jsMatches.reduce((a, b) => a.length > b.length ? a : b);
+        urls.image_url = longestMatch.replace(/["']/g, '');
+        console.log('Found in JavaScript:', urls.image_url);
       }
     }
     
-    // Pattern 2: Look for image URL in the HTML directly
-    if (!imageUrl) {
-      const imageUrlMatch = resultHtml.match(/src="(https:\/\/e[0-9]\.yotools\.net\/images\/user_image\/[^"]+\.jpg)"/);
-      if (imageUrlMatch) {
-        imageUrl = imageUrlMatch[1];
-        console.log('Found direct image URL:', imageUrl);
-      }
-    }
-    
-    // Pattern 3: Look for bg-image class
-    if (!imageUrl) {
-      const $result = cheerio.load(resultHtml);
-      const bgImageSrc = $result('img.bg-image').attr('src');
-      if (bgImageSrc) {
-        imageUrl = bgImageSrc.startsWith('http') ? bgImageSrc : 'https:' + bgImageSrc;
-        console.log('Found bg-image URL:', imageUrl);
-      }
-    }
-    
-    // Pattern 4: Generic search for yotools.net image URLs
-    if (!imageUrl) {
-      const yotoolsImageMatch = resultHtml.match(/(https:\/\/e[0-9]\.yotools\.net\/[^"\s<>]+\.(jpg|png|jpeg))/);
-      if (yotoolsImageMatch) {
-        imageUrl = yotoolsImageMatch[1];
-        console.log('Found generic yotools image:', imageUrl);
-      }
-    }
-    
-    // If we have imageUrl but no downloadUrl, use imageUrl for both
-    if (imageUrl && !downloadUrl) {
-      downloadUrl = imageUrl;
-    }
-    
-    // If we have downloadUrl but no imageUrl, try to convert it
-    if (downloadUrl && !imageUrl) {
-      // Try to convert save-image URL to image URL
-      if (downloadUrl.includes('/save-image/')) {
-        const filenameMatch = downloadUrl.match(/save-image\/([^\/]+)\.jpg/);
-        if (filenameMatch) {
-          const filename = filenameMatch[1];
-          const date = new Date();
-          const year = date.getFullYear();
-          const month = (date.getMonth() + 1).toString().padStart(2, '0');
-          imageUrl = `https://e1.yotools.net/images/user_image/${year}/${month}/${filename}.jpg`;
+    // Final check
+    if (!urls.image_url || !urls.download_url) {
+      console.log('Could not find URLs. Showing HTML snippet for debugging:');
+      console.log(postResponse.data.substring(0, 1000));
+      
+      return {
+        success: false,
+        error: 'Could not extract image URLs',
+        debug: {
+          html_length: postResponse.data.length,
+          contains_yotools: postResponse.data.includes('yotools.net'),
+          contains_jpg: postResponse.data.includes('.jpg'),
+          sample: postResponse.data.substring(0, 500)
         }
-      } else {
-        imageUrl = downloadUrl;
-      }
+      };
     }
     
-    if (!imageUrl || !downloadUrl) {
-      // For debugging: show a snippet of the HTML
-      const htmlSnippet = resultHtml.substring(0, 3000);
-      console.log('HTML snippet for debugging:', htmlSnippet);
-      throw new Error('Could not extract image URLs from response');
-    }
+    console.log('Success! URLs found:');
+    console.log('Image URL:', urls.image_url);
+    console.log('Download URL:', urls.download_url);
     
     return {
       success: true,
-      image_url: imageUrl,
-      download_url: downloadUrl
+      image_url: urls.image_url,
+      download_url: urls.download_url
     };
     
   } catch (error) {
-    console.error('Error generating logo:', error.message);
+    console.error('Error in generateEphotoLogo:', error.message);
     return {
       success: false,
-      error: error.message
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     };
   }
 }
@@ -167,20 +283,15 @@ async function generateEphotoLogo(effectUrl, text) {
 // API Routes
 app.get('/', (req, res) => {
   res.json({
-    message: 'ephoto360 API - Working Version',
+    message: 'ephoto360 API - Fixed Version',
     status: 'running',
     endpoints: {
-      '/api/logo': 'GET - Generate logo',
-      '/api/test': 'GET - Test endpoint',
-      '/api/health': 'GET - Health check'
+      '/api/logo': 'GET - Generate logo (url, name params)',
+      '/api/test': 'GET - Test with Naruto',
+      '/api/debug': 'GET - Debug mode'
     },
     example: '/api/logo?url=https://en.ephoto360.com/naruto-shippuden-logo-style-text-effect-online-808.html&name=Naruto'
   });
-});
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 // Test endpoint
@@ -199,6 +310,29 @@ app.get('/api/test', async (req, res) => {
   }
 });
 
+// Debug endpoint
+app.get('/api/debug', async (req, res) => {
+  try {
+    const { url, name } = req.query;
+    
+    if (!url || !name) {
+      return res.json({
+        error: 'Provide url and name parameters',
+        example: '/api/debug?url=https://en.ephoto360.com/naruto-shippuden-logo-style-text-effect-online-808.html&name=TEST'
+      });
+    }
+    
+    const result = await generateEphotoLogo(url, name);
+    res.json(result);
+    
+  } catch (error) {
+    res.json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Main logo endpoint
 app.get('/api/logo', async (req, res) => {
   try {
@@ -207,23 +341,22 @@ app.get('/api/logo', async (req, res) => {
     if (!url || !name) {
       return res.status(400).json({
         success: false,
-        error: 'Missing parameters. Use: /api/logo?url=EPHOTO_URL&name=TEXT',
+        error: 'Missing parameters',
+        usage: '/api/logo?url=EPHOTO360_URL&name=TEXT',
         example: '/api/logo?url=https://en.ephoto360.com/naruto-shippuden-logo-style-text-effect-online-808.html&name=YourText'
       });
     }
     
     const result = await generateEphotoLogo(url, name);
     
-    if (!result.success) {
-      return res.status(500).json(result);
-    }
-    
     res.json({
-      success: true,
-      result: {
+      success: result.success,
+      result: result.success ? {
         image_url: result.image_url,
         download_url: result.download_url
-      }
+      } : undefined,
+      error: result.error,
+      debug: result.debug
     });
     
   } catch (error) {
@@ -232,38 +365,6 @@ app.get('/api/logo', async (req, res) => {
       error: error.message
     });
   }
-});
-
-// POST endpoint
-app.post('/api/logo', async (req, res) => {
-  try {
-    const { url, text } = req.body;
-    
-    if (!url || !text) {
-      return res.status(400).json({
-        success: false,
-        error: 'URL and text are required'
-      });
-    }
-    
-    const result = await generateEphotoLogo(url, text);
-    res.json(result);
-    
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Error handling
-app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).json({
-    success: false,
-    error: 'Internal server error'
-  });
 });
 
 // Export for Vercel
