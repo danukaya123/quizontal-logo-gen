@@ -2,54 +2,91 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 
 module.exports = async (req, res) => {
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     
+    // Handle OPTIONS request for CORS
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
+
     try {
         const { url, name } = req.query;
         
         if (!url || !name) {
-            return res.json({ 
+            return res.status(400).json({ 
                 success: false, 
-                error: 'Need url and name parameters' 
+                error: 'Missing url or name parameters' 
             });
         }
 
-        console.log(`Testing with: ${url} - Text: ${name}`);
+        console.log(`Processing: ${url} with text: ${name}`);
+        const result = await generateEphotoLogo(url, name);
         
-        const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://en.ephoto360.com/'
-        };
+        return res.json(result);
+        
+    } catch (error) {
+        console.error('API Error:', error.message);
+        return res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+};
 
-        // Step 1: Get the page
-        const getResponse = await axios.get(url, { headers });
+async function generateEphotoLogo(url, text) {
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0'
+    };
+
+    try {
+        // Step 1: Get initial page
+        console.log('Step 1: Fetching page...');
+        const getResponse = await axios.get(url, { 
+            headers,
+            timeout: 15000
+        });
+
         const $ = cheerio.load(getResponse.data);
         
-        // Find the form and token
-        const token = $('input[name="token"]').val();
-        console.log('Token:', token ? 'Found' : 'Not found');
+        // Extract token
+        let token = $('input[name="token"]').val();
+        if (!token) {
+            // Try alternative selectors
+            token = $('input#token').val();
+        }
         
         if (!token) {
-            // Show what we got
-            return res.json({
-                success: false,
-                error: 'No token found',
-                debug: {
-                    title: $('title').text(),
-                    formExists: $('form').length > 0,
-                    sampleHtml: getResponse.data.substring(0, 1000)
-                }
-            });
+            // Search in HTML
+            const tokenMatch = getResponse.data.match(/name="token"\s+value="([^"]+)"/);
+            if (tokenMatch) token = tokenMatch[1];
         }
 
+        if (!token) {
+            throw new Error('Security token not found');
+        }
+
+        // Get other form fields
+        const buildServer = $('input[name="build_server"]').val() || 'https://e1.yotools.net';
+        const buildServerId = $('input[name="build_server_id"]').val() || '2';
+
+        console.log('Step 2: Submitting form...');
+        
         // Step 2: Submit form
         const formData = new URLSearchParams();
-        formData.append('text[]', name);
+        formData.append('text[]', text);
         formData.append('token', token);
-        formData.append('build_server', 'https://e1.yotools.net');
-        formData.append('build_server_id', '2');
+        formData.append('build_server', buildServer);
+        formData.append('build_server_id', buildServerId);
         formData.append('submit', 'GO');
 
         const postHeaders = {
@@ -59,82 +96,142 @@ module.exports = async (req, res) => {
             'Referer': url
         };
 
-        const postResponse = await axios.post(url, formData.toString(), { headers: postHeaders });
-        
-        // Analyze the response
-        const result$ = cheerio.load(postResponse.data);
-        
-        // Find ALL images in the response
-        const allImages = [];
-        result$('img').each((i, el) => {
-            const src = result$(el).attr('src');
-            if (src) {
-                allImages.push({
-                    src: src,
-                    class: result$(el).attr('class') || 'no-class',
-                    id: result$(el).attr('id') || 'no-id'
-                });
-            }
+        const postResponse = await axios.post(url, formData.toString(), {
+            headers: postHeaders,
+            timeout: 30000,
+            maxRedirects: 5
         });
 
-        // Find background images in CSS
-        const bgImages = [];
-        const styleRegex = /background(?:-image)?\s*:\s*url\(['"]?([^'"()]+)['"]?\)/gi;
-        let match;
-        while ((match = styleRegex.exec(postResponse.data)) !== null) {
-            bgImages.push(match[1]);
+        console.log('Step 3: Parsing response for image URL...');
+        
+        // Step 3: Extract image URL from Save button href
+        const resultHtml = postResponse.data;
+        
+        // Look for the save button href
+        const saveButtonRegex = /href="(https:\/\/e[0-9]\.yotools\.net\/save-image\/([a-f0-9]+)\.jpg\/\d+)"/i;
+        const saveButtonMatch = resultHtml.match(saveButtonRegex);
+        
+        if (saveButtonMatch) {
+            const saveUrl = saveButtonMatch[1];
+            const imageId = saveButtonMatch[2];
+            
+            // Construct the actual image URL
+            const imageUrl = `https://${saveUrl.split('/')[2]}/images/user_image/${imageId}.jpg`;
+            const directDownload = saveUrl;
+            
+            console.log('Success! Image URL:', imageUrl);
+            
+            return {
+                success: true,
+                result: {
+                    download_url: imageUrl,
+                    direct_download: directDownload,
+                    text: text,
+                    image_id: imageId
+                }
+            };
         }
 
-        // Look for image URLs in script tags
-        const scriptImages = [];
-        const scriptRegex = /(https?:\/\/[^"'\s<>]+\.(jpg|png|jpeg|gif|webp))/gi;
-        const scriptMatches = postResponse.data.match(scriptRegex) || [];
-        scriptMatches.forEach(url => {
-            if (url.includes('yotools.net')) {
-                scriptImages.push(url);
-            }
-        });
+        // Alternative: Look for image in img tags
+        const $result = cheerio.load(resultHtml);
+        
+        // Check #save-image-btn
+        const saveButtonHref = $result('#save-image-btn').attr('href');
+        if (saveButtonHref) {
+            const parts = saveButtonHref.split('/');
+            const imageId = parts[parts.length - 2].replace('.jpg', '');
+            const server = parts[2];
+            
+            const imageUrl = `https://${server}/images/user_image/${imageId}.jpg`;
+            
+            return {
+                success: true,
+                result: {
+                    download_url: imageUrl,
+                    direct_download: saveButtonHref,
+                    text: text,
+                    image_id: imageId
+                }
+            };
+        }
 
-        // Also look for common patterns
-        const commonPatterns = [
-            /"image"\s*:\s*"([^"]+)"/,
-            /"url"\s*:\s*"([^"]+)"/,
-            /src\s*=\s*["']([^"']+\.(jpg|png|jpeg))["']/i,
-            /href\s*=\s*["']([^"']+\.(jpg|png|jpeg))["']/i
-        ];
+        // Look for any save-image URL
+        const anySaveUrlMatch = resultHtml.match(/(https:\/\/e[0-9]\.yotools\.net\/save-image\/[^"']+)/);
+        if (anySaveUrlMatch) {
+            const saveUrl = anySaveUrlMatch[0];
+            const parts = saveUrl.split('/');
+            const imageId = parts[parts.length - 2].replace('.jpg', '');
+            const server = parts[2];
+            
+            const imageUrl = `https://${server}/images/user_image/${imageId}.jpg`;
+            
+            return {
+                success: true,
+                result: {
+                    download_url: imageUrl,
+                    direct_download: saveUrl,
+                    text: text,
+                    image_id: imageId
+                }
+            };
+        }
 
-        const patternMatches = [];
-        commonPatterns.forEach(pattern => {
-            const matches = postResponse.data.match(pattern);
-            if (matches) {
-                patternMatches.push(matches[1]);
-            }
-        });
+        // If we can't find the save button, try to find the image directly
+        const imageRegex = /(https:\/\/e[0-9]\.yotools\.net\/images\/user_image\/[a-f0-9]+\.jpg)/i;
+        const imageMatch = resultHtml.match(imageRegex);
+        
+        if (imageMatch) {
+            const imageUrl = imageMatch[0];
+            const directDownload = imageUrl.replace('/images/user_image/', '/save-image/');
+            
+            return {
+                success: true,
+                result: {
+                    download_url: imageUrl,
+                    direct_download: directDownload,
+                    text: text
+                }
+            };
+        }
 
-        return res.json({
-            success: true,
-            debug: {
-                responseLength: postResponse.data.length,
-                totalImagesFound: allImages.length,
-                allImages: allImages,
-                backgroundImages: bgImages,
-                scriptImages: scriptImages.slice(0, 5),
-                patternMatches: patternMatches,
-                hasViewImageWrapper: result$('#view-image-wrapper').length > 0,
-                hasBgImageClass: result$('.bg-image').length > 0,
-                first500Chars: postResponse.data.substring(0, 500),
-                // Look for specific sections
-                containsCreating: postResponse.data.includes('Creating'),
-                containsPleaseWait: postResponse.data.includes('Please wait'),
-                containsProcessing: postResponse.data.includes('Processing')
-            }
-        });
+        // Check if we got an error or the original page
+        if (resultHtml.includes('input[name="token"]')) {
+            throw new Error('Form submission failed - returned to input page');
+        }
 
+        // If we get a "processing" message
+        if (resultHtml.includes('Creating') || resultHtml.includes('Please wait')) {
+            // Try to wait and retry (simplified)
+            return {
+                success: false,
+                error: 'Image is being generated. Try again in 10 seconds.',
+                retry: true
+            };
+        }
+
+        throw new Error('Could not find image URL in response');
+        
     } catch (error) {
-        return res.json({
+        console.error('Error generating logo:', error.message);
+        
+        if (error.code === 'ECONNABORTED') {
+            return {
+                success: false,
+                error: 'Request timeout. The website might be slow.'
+            };
+        }
+        
+        if (error.response) {
+            console.error('Response status:', error.response.status);
+            return {
+                success: false,
+                error: `Website returned status ${error.response.status}`
+            };
+        }
+        
+        return {
             success: false,
-            error: error.message,
-            stack: error.stack
-        });
+            error: error.message
+        };
     }
-};
+}
