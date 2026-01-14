@@ -1,21 +1,18 @@
-// ephoto-api.js - Fixed version without Puppeteer
-const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const app = express();
 
-app.use(express.json());
+module.exports = async (req, res) => {
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Credentials', true);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    
+    // Handle OPTIONS request for CORS
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
 
-// CORS middleware
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
-    next();
-});
-
-// API endpoint
-app.get('/api/logo', async (req, res) => {
     try {
         const { url, name } = req.query;
         
@@ -28,31 +25,30 @@ app.get('/api/logo', async (req, res) => {
 
         console.log(`Processing: ${url} with text: ${name}`);
 
-        // Use axios method only (no puppeteer)
-        const result = await createLogoWithAxios(url, name);
+        const result = await createLogo(url, name);
         
         if (!result.success) {
             return res.status(500).json(result);
         }
-
-        res.json(result);
+        
+        return res.json(result);
+        
     } catch (error) {
         console.error('Error:', error.message);
-        res.status(500).json({ 
+        return res.status(500).json({ 
             success: false, 
             error: error.message 
         });
     }
-});
+};
 
-// Improved axios method
-async function createLogoWithAxios(url, text) {
+async function createLogo(url, text) {
     try {
-        // Set custom headers to mimic browser
+        // Enhanced headers to mimic real browser
         const headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
@@ -60,43 +56,84 @@ async function createLogoWithAxios(url, text) {
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
             'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0'
+            'Cache-Control': 'max-age=0',
+            'Referer': 'https://en.ephoto360.com/'
         };
 
-        // Step 1: Get initial page
-        console.log('Fetching initial page...');
+        console.log('Step 1: Fetching page...');
+        
+        // Step 1: Get the page
         const getResponse = await axios.get(url, { 
             headers,
-            timeout: 30000 
+            timeout: 15000
         });
-        
+
+        console.log('Step 2: Parsing HTML...');
         const $ = cheerio.load(getResponse.data);
         
-        // Extract form data
-        const token = $('input[name="token"]').val();
-        const buildServer = $('input[name="build_server"]').val();
-        const buildServerId = $('input[name="build_server_id"]').val();
+        // Debug: Log form HTML
+        const formHtml = $('form').html();
+        console.log('Form HTML sample:', formHtml?.substring(0, 500));
+
+        // Try different selectors for token
+        let token = $('input[name="token"]').val();
+        
+        // Alternative selectors
+        if (!token) {
+            token = $('input#token').val();
+        }
         
         if (!token) {
-            console.log('Token not found. HTML sample:', getResponse.data.substring(0, 1000));
+            // Try to extract from all input fields
+            $('input[type="hidden"]').each((i, el) => {
+                if ($(el).attr('name') === 'token') {
+                    token = $(el).val();
+                }
+            });
+        }
+
+        if (!token) {
+            // Last resort: search in entire HTML
+            const tokenMatch = getResponse.data.match(/name="token"\s+value="([^"]+)"/);
+            if (tokenMatch) {
+                token = tokenMatch[1];
+            }
+        }
+
+        if (!token) {
             return { 
                 success: false, 
-                error: 'Token not found on page' 
+                error: 'Token not found. The website structure may have changed.',
+                debug: {
+                    url: url,
+                    hasForm: $('form').length > 0,
+                    hiddenInputs: $('input[type="hidden"]').length
+                }
             };
         }
 
-        console.log('Extracted token:', token.substring(0, 10) + '...');
+        console.log('Token found:', token.substring(0, 10) + '...');
 
-        // Step 2: Prepare form data
+        // Get other form fields
+        let buildServer = $('input[name="build_server"]').val();
+        let buildServerId = $('input[name="build_server_id"]').val();
+        
+        if (!buildServer) buildServer = 'https://e1.yotools.net';
+        if (!buildServerId) buildServerId = '2';
+
+        console.log('Step 3: Preparing form data...');
+        
+        // Prepare form data
         const formData = new URLSearchParams();
         formData.append('text[]', text);
         formData.append('token', token);
-        formData.append('build_server', buildServer || 'https://e1.yotools.net');
-        formData.append('build_server_id', buildServerId || '2');
+        formData.append('build_server', buildServer);
+        formData.append('build_server_id', buildServerId);
         formData.append('submit', 'GO');
 
-        // Step 3: Submit form
-        console.log('Submitting form...');
+        console.log('Step 4: Submitting form...');
+        
+        // Step 2: Submit the form
         const postHeaders = {
             ...headers,
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -107,108 +144,113 @@ async function createLogoWithAxios(url, text) {
 
         const postResponse = await axios.post(url, formData.toString(), {
             headers: postHeaders,
-            timeout: 45000, // Increased timeout for image processing
-            maxRedirects: 5,
-            validateStatus: (status) => status < 500
+            timeout: 30000,
+            maxRedirects: 5
         });
 
-        console.log('Response status:', postResponse.status);
+        console.log('Step 5: Parsing response...');
         
-        // Step 4: Parse response and find image
+        // Parse the response
         const result$ = cheerio.load(postResponse.data);
         
-        // Method 1: Look for img tag with bg-image class
-        let imageUrl = result$('img.bg-image').attr('src');
+        // Try multiple ways to find the image
+        let imageUrl = null;
         
-        // Method 2: Search in HTML for image patterns
+        // Method 1: Direct selector
+        imageUrl = result$('img.bg-image').attr('src');
+        
+        // Method 2: Search for image patterns
         if (!imageUrl) {
             const html = postResponse.data;
             
-            // Pattern 1: Direct image URL
-            const regex1 = /(https:\/\/e[0-9]\.yotools\.net\/images\/user_image\/[^"'\s]+)/g;
-            const matches = html.match(regex1);
-            if (matches && matches.length > 0) {
-                imageUrl = matches[0];
-            }
+            // Pattern for ephoto360 images
+            const patterns = [
+                /(https:\/\/e[0-9]\.yotools\.net\/images\/user_image\/[^"'\s<>]+\.(jpg|png|jpeg))/i,
+                /src\s*=\s*["'](https:\/\/e[0-9]\.yotools\.net\/images\/user_image\/[^"']+)["']/i,
+                /"image_url"\s*:\s*["'](https:\/\/[^"']+)["']/i,
+                /background-image\s*:\s*url\(["']?(https:\/\/e[0-9]\.yotools\.net\/images\/user_image\/[^"')]+)["']?\)/i
+            ];
             
-            // Pattern 2: In src attribute
-            if (!imageUrl) {
-                const regex2 = /src="(https:\/\/e[0-9]\.yotools\.net\/images\/user_image\/[^"]+)"/;
-                const match = html.match(regex2);
-                if (match) imageUrl = match[1];
+            for (const pattern of patterns) {
+                const match = html.match(pattern);
+                if (match) {
+                    imageUrl = match[1];
+                    break;
+                }
             }
-            
-            // Pattern 3: Look for any .jpg URL
-            if (!imageUrl) {
-                const regex3 = /(https:\/\/[^"\s]+\.jpg)/g;
-                const jpgMatches = html.match(regex3);
-                if (jpgMatches) {
-                    for (const match of jpgMatches) {
-                        if (match.includes('yotools.net') && match.includes('user_image')) {
-                            imageUrl = match;
-                            break;
-                        }
+        }
+        
+        // Method 3: Look for any .jpg URL
+        if (!imageUrl) {
+            const html = postResponse.data;
+            const jpgUrls = html.match(/(https?:\/\/[^"\s<>]+\.jpg)/gi);
+            if (jpgUrls) {
+                for (const jpgUrl of jpgUrls) {
+                    if (jpgUrl.includes('yotools.net') && jpgUrl.includes('user_image')) {
+                        imageUrl = jpgUrl;
+                        break;
                     }
                 }
             }
         }
 
-        // Method 3: Try to extract from JavaScript variables
         if (!imageUrl) {
-            const scriptRegex = /var\s+image_url\s*=\s*['"]([^'"]+)['"]/;
-            const scriptMatch = postResponse.data.match(scriptRegex);
-            if (scriptMatch) {
-                imageUrl = scriptMatch[1];
-            }
-        }
-
-        if (!imageUrl) {
-            console.log('Could not find image URL in response.');
-            console.log('Response sample:', postResponse.data.substring(0, 2000));
+            console.log('Could not find image. Response sample:', postResponse.data.substring(0, 1000));
             
-            // Check if it's a delayed response (image is being generated)
-            if (postResponse.data.includes('Creating image') || 
-                postResponse.data.includes('Please wait') ||
+            // Check if we got a wait message
+            if (postResponse.data.includes('Please wait') || 
+                postResponse.data.includes('Creating') ||
                 postResponse.data.includes('Processing')) {
-                
                 return {
                     success: false,
-                    error: 'Image is still being generated. Try again in 10 seconds.',
+                    error: 'Image is being generated. The website may be slow. Try again in a few seconds.',
                     retry: true
                 };
             }
             
             return { 
                 success: false, 
-                error: 'Image URL not found in response' 
+                error: 'Could not extract image URL from response',
+                debug: {
+                    responseLength: postResponse.data.length,
+                    hasImageTag: result$('img').length > 0
+                }
             };
         }
 
-        console.log('Found image URL:', imageUrl);
+        console.log('Image found:', imageUrl);
         
         // Create direct download URL
-        let directDownload = imageUrl;
-        if (imageUrl.includes('/images/user_image/')) {
-            const filename = imageUrl.split('/').pop();
-            directDownload = `https://e1.yotools.net/save-image/${filename}`;
-        }
-
+        const directUrl = imageUrl.replace('/images/user_image/', '/save-image/');
+        
         return {
             success: true,
             result: {
                 download_url: imageUrl,
-                direct_download: directDownload,
+                direct_download: directUrl,
                 text: text,
-                effect_url: url
+                effect: url
             }
         };
-        
+
     } catch (error) {
-        console.error('Axios error:', error.message);
+        console.error('Error in createLogo:', error.message);
+        
+        if (error.code === 'ECONNABORTED') {
+            return { 
+                success: false, 
+                error: 'Request timeout. The website might be slow.' 
+            };
+        }
+        
         if (error.response) {
             console.error('Response status:', error.response.status);
-            console.error('Response data:', error.response.data);
+            return { 
+                success: false, 
+                error: `Website returned status ${error.response.status}` 
+            };
         }
+        
         return { 
             success: false, 
             error: `Request failed: ${error.message}` 
@@ -217,29 +259,8 @@ async function createLogoWithAxios(url, text) {
 }
 
 // Health check endpoint
-app.get('/', (req, res) => {
-    res.json({ 
-        status: 'online',
-        service: 'Ephoto360 Logo Generator API',
-        endpoints: {
-            logo: '/api/logo?url=EPHOTO_URL&name=TEXT',
-            example: '/api/logo?url=https://en.ephoto360.com/naruto-shippuden-logo-style-text-effect-online-808.html&name=Naruto'
-        }
-    });
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).json({ 
-        success: false, 
-        error: 'Internal server error' 
-    });
-});
-
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-});
-
-module.exports = app;
+module.exports.config = {
+    api: {
+        bodyParser: false,
+    },
+};
